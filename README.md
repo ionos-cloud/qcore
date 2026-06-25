@@ -29,11 +29,19 @@ qcore can optionally bundle the target binary and its dependencies into the outp
 
 ## How to Build
 
+The build compiles zstd and libarchive from source to be able to link it
+statically against libmusl. Required host tools:
+
+* `zig` 0.16 from https://ziglang.org/download
+* `make`, `autoconf`, `automake` and `libtool`
+* `nproc`
+
+Build steps:
+
 * clone this repository
-* install zig 0.16 from https://ziglang.org/download
 * run `zig build -Doptimize=ReleaseSafe` to build the binary
 
-For minmal binary size build with `zig build -Doptimize=ReleaseSmall` instead. This currently yields a binary of less than 1MB.
+The binary will be placed in `zig-out/bin/qcore`. For minmal binary size build with `zig build -Doptimize=ReleaseSmall` instead. This currently yields a binary of less than 1MB.
 
 ## Binary Release
-* a stripped binary is available in the releases section of this repository. It is statically linked and runs on any linux x64 installation.
+A stripped binary is available in the releases section of this repository. It is statically linked and runs on any linux x64 installation.

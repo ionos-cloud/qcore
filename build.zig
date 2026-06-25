@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    // only supported target is x64-64. Link statically to run everywhere
+    // only supported target is x86-64. Link statically to run everywhere
     const target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .linux,
@@ -21,14 +21,14 @@ pub fn build(b: *std.Build) void {
 
     // build payload.S into payload.bin
     const payload_run_cc = b.addSystemCommand(&[_][]const u8 {
-        "zig", "cc", "-fPIC", "-c"
+        b.graph.zig_exe, "cc", "-target", "x86_64-linux-musl", "-fPIC", "-c"
     });
     payload_run_cc.addFileArg(b.path("src/payload.S"));
     payload_run_cc.addArg("-o");
     const payload_o = payload_run_cc.addOutputFileArg("payload.o");
 
     const payload_run_objcopy = b.addSystemCommand(&[_][]const u8 {
-        "zig", "objcopy", "-O", "binary", "--only-section=.text"
+        b.graph.zig_exe, "objcopy", "-O", "binary", "--only-section=.text"
     });
     payload_run_objcopy.addFileArg(payload_o);
     const payload_bin = payload_run_objcopy.addOutputFileArg("payload.bin");
