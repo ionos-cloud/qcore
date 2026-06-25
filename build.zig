@@ -26,11 +26,18 @@ pub fn build(b: *std.Build) void {
     payload_run_cc.addFileArg(b.path("src/payload.S"));
     payload_run_cc.addArg("-o");
     const payload_o = payload_run_cc.addOutputFileArg("payload.o");
+    // These steps shell out to `zig` (cc/objcopy, and the parallel `zig cc`/`zig
+    // ar` that `make` spawns below). Each nested `zig` inherits ZIG_PROGRESS and
+    // writes binary progress IPC into the parent's pipe; with many running under
+    // `make -j` the parent renders the interleaved bytes as terminal garbage.
+    // Stop passing the progress fd down so these children stay silent.
+    payload_run_cc.disable_zig_progress = true;
 
     const payload_run_objcopy = b.addSystemCommand(&[_][]const u8 {
         b.graph.zig_exe, "objcopy", "-O", "binary", "--only-section=.text"
     });
     payload_run_objcopy.addFileArg(payload_o);
+    payload_run_objcopy.disable_zig_progress = true;
     const payload_bin = payload_run_objcopy.addOutputFileArg("payload.bin");
     exe.root_module.addAnonymousImport("payload", .{
         .root_source_file = payload_bin
@@ -66,6 +73,7 @@ pub fn build(b: *std.Build) void {
         \\cp "$OUT/src/lib/libzstd.a" "$OUT/libzstd.a"
         \\cp "$OUT/src/lib/zstd.h" "$OUT/src/lib/zstd_errors.h" "$OUT/include/"
     , .{ quiet, cc, b.graph.zig_exe, b.graph.zig_exe, cflags }), "sh" });
+    zstd_build.disable_zig_progress = true;
     zstd_build.addDirectoryArg(zstd_dep.path(""));
     const zstd_out = zstd_build.addOutputDirectoryArg("zstd-out");
     const zstd_lib = zstd_out.path(b, "libzstd.a");
@@ -95,6 +103,7 @@ pub fn build(b: *std.Build) void {
         \\make -j"$(nproc)" libarchive.la
         \\cp .libs/libarchive.a "$OUT/libarchive.a"
     , .{ quiet, cc, cflags }), "sh" });
+    libarchive_build.disable_zig_progress = true;
     libarchive_build.addDirectoryArg(libarchive_dep.path(""));
     const libarchive_out = libarchive_build.addOutputDirectoryArg("libarchive-out");
     libarchive_build.addDirectoryArg(zstd_include);

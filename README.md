@@ -19,7 +19,7 @@ qcore is statically linked and can be used on any linux installation.
 * statically linked, runs on any x86-64 linux
 * small binary
 * optional output directly into .tar.zst for minimal disk usage
-* proper thread debugging even with containers
+* proper thread debugging even with containers (bundles libthread_db.so)
 
 ## Restrictions
 * linux x86-64 only
