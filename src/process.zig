@@ -292,11 +292,12 @@ pub fn cloneChild(pid: i32, syscall_addr: usize, rlim: usize) !struct { i32, i32
 
     try runToStop(pid, false, PTRACE.EVENT.CLONE);
 
-    var child_hostpid: c_int = undefined;
-    ptrace(PTRACE.GETEVENTMSG, pid, 0, @intFromPtr(&child_hostpid)) catch |err| {
+    var eventmsg: u64 = undefined;
+    ptrace(PTRACE.GETEVENTMSG, pid, 0, @intFromPtr(&eventmsg)) catch |err| {
         log.E("Failed to get event message for PID {d}: {}", .{pid, err});
         return err;
     };
+    const child_hostpid: i32 = @intCast(eventmsg);
     log.D1("Payload clone created child with host PID {d}", .{child_hostpid});
 
     //
