@@ -221,7 +221,7 @@ pub fn collect_pre(gpa: std.mem.Allocator, pid: i32, nproc: usize) !Fields {
         log.E("Failed to read directory {s}: {}", .{dir_path, err});
         return err;
     };
-    errdefer std.Io.Dir.close(dir, io);
+    defer std.Io.Dir.close(dir, io);
 
     var iter = dir.iterate();
     while (try iter.next(io)) |entry| {
@@ -260,7 +260,7 @@ fn queueDir(gpa: std.mem.Allocator, io: std.Io, group: *std.Io.Group,
         log.E("Failed to read directory {s}: {}", .{path, err});
         return err;
     };
-    errdefer std.Io.Dir.close(dir, io);
+    defer std.Io.Dir.close(dir, io);
 
     var iter = dir.iterate();
     while (try iter.next(io)) |entry| {
