@@ -373,10 +373,11 @@ fn resolveTargetSymlink(gpa: std.mem.Allocator, io: std.Io, out: *output.Output,
 
                 const resolved = if (link_target[0] == '/')
                     // absolute symlink, use as is
-                    link_target
+                    try gpa.dupe(u8, link_target)
                 else
                     try std.fs.path.resolve(gpa, &.{ std.fs.path.dirname(checked_path.items).?,
                         link_target });
+                defer gpa.free(resolved);
 
                 const remainder = current_path[checked_path.items.len..];
                 log.D3("Resolved symlink target {s}, remainder of path is {s}",
