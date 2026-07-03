@@ -12,7 +12,7 @@ const bundle = @import("bundle.zig");
 const time = @cImport({
     @cInclude("time.h");
 });
-const readme = @embedFile("README");
+const readme = @embedFile("assets/output-README");
 
 const ptrace = std.posix.ptrace;
 const PTRACE = std.os.linux.PTRACE;
