@@ -328,6 +328,12 @@ pub fn cloneChild(io: std.Io, pid: i32, syscall_addr: usize, rlim: usize) !struc
     const child_hostpid: i32 = @intCast(eventmsg);
     log.D1("Payload clone created child with host PID {d}", .{child_hostpid});
 
+    // the clone is a full COW copy of the target; make sure it never survives an
+    // error on the way to a successful return, or it leaks as a stopped process
+    // holding a copy of the target's memory
+    errdefer std.posix.kill(child_hostpid, std.posix.SIG.KILL) catch |err|
+        log.E("Failed to kill dump clone {d} after error: {}", .{child_hostpid, err});
+
     //
     // make the dump clone the first target of the OOM killer, so memory
     // pressure caused by our COW clone never takes out other processes

@@ -672,8 +672,18 @@ pub fn main(init: std.process.Init) !u8 {
     //
     // complete thread info state and status fields from net_info
     //
+    // forkTarget succeeded, so the clone and the seized target must be cleaned
+    // up on every path from here on, even before the dump loop below
     const target_state, const target_status, const pmaps =
-        try extractStateStatus(gpa, &thread_info, net_info, pid);
+        extractStateStatus(gpa, &thread_info, net_info, pid) catch |err|
+    {
+        log.E("Failed to extract target state and status: {}", .{err});
+        dumpStackTrace(@errorReturnTrace());
+        cleanupTarget(gpa, io, pid, child_nspid, child_hostpid, syscall_addr) catch |cerr| {
+            log.E("Failed to clean up target: {}", .{cerr});
+        };
+        return 1;
+    };
 
     //
     // dump target, thread names and core file
