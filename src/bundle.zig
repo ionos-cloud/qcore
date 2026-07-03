@@ -368,12 +368,14 @@ fn resolveTargetSymlink(gpa: std.mem.Allocator, io: std.Io, out: *output.Output,
                     };
                 }
 
-                const resolved = if (link_target[0] == '/')
+                const resolved_allocated = link_target[0] != '/';
+                const resolved = if (!resolved_allocated)
                     // absolute symlink, use as is
                     link_target
                 else
                     try std.fs.path.resolve(gpa, &.{ std.fs.path.dirname(checked_path.items).?,
                         link_target });
+                defer if (resolved_allocated) gpa.free(resolved);
 
                 const remainder = current_path[checked_path.items.len..];
                 log.D3("Resolved symlink target {s}, remainder of path is {s}",
