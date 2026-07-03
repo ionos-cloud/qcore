@@ -222,10 +222,21 @@ fn extractPathsFromLinkerSection(gpa: std.mem.Allocator, io: std.Io, page_size: 
         return error.NoDynamicSection;
     };
 
+    // impose a high limit on the size to avoid a huge allocation in case of a malformed target
+    if (dyn_hdr.filesz > 16 * 1048576) {
+        log.E("PT_DYNAMIC section too large: {d}", .{dyn_hdr.filesz});
+        return error.InvalidElf;
+    }
     const dyn_buf = try gpa.alignedAlloc(u8, .@"8", dyn_hdr.filesz);
     defer gpa.free(dyn_buf);
 
-    const dyn_vaddr = if (ehdr.type == elf.ET.DYN) exe_base + dyn_hdr.vaddr else dyn_hdr.vaddr;
+    const dyn_vaddr = if (ehdr.type == elf.ET.DYN)
+        std.math.add(u64, exe_base, dyn_hdr.vaddr) catch {
+            log.E("PT_DYNAMIC vaddr {x} overflows for base {x}", .{dyn_hdr.vaddr, exe_base});
+            return error.InvalidElf;
+        }
+    else
+        dyn_hdr.vaddr;
     try readMem(io, mem_file, dyn_buf, dyn_vaddr);
 
     const dyn_many_ptr: [*]elf.Elf64_Dyn = @ptrCast(dyn_buf.ptr);
