@@ -11,6 +11,9 @@ const OutputFs = struct {
 };
 
 const zeroLen = 65536;
+// core dumps and bundled files contain the target's memory, so they must not be
+// readable by anyone but the user qcore runs as
+const file_mode = 0o600;
 const OutputArchive = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -71,7 +74,8 @@ pub const Output = union(OutputType) {
                 log.E("Failed to create directory path for file: {s}", .{name});
                 return error.CreateDirFailed;
             };
-            const f = output.fs.dir.createFile(output.fs.io, name, .{}) catch {
+            const f = output.fs.dir.createFile(output.fs.io, name,
+                .{ .permissions = .fromMode(file_mode) }) catch {
                 log.E("Failed to create file: {s}", .{name});
                 return error.CreateFileFailed;
             };
@@ -101,7 +105,7 @@ pub const Output = union(OutputType) {
             ar.archive_entry_set_pathname(entry, name_z);
             ar.archive_entry_set_size(entry, @intCast(length));
             ar.archive_entry_set_filetype(entry, 0o100000); // AE_IFREG
-            ar.archive_entry_set_perm(entry, 0o644);
+            ar.archive_entry_set_perm(entry, file_mode);
             ar.archive_entry_set_uid(entry, 0);
             ar.archive_entry_set_gid(entry, 0);
             ar.archive_entry_set_uname(entry, "root");
