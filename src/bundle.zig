@@ -277,7 +277,14 @@ fn extractPathsFromLinkerSection(gpa: std.mem.Allocator, io: std.Io, page_size: 
 
     var link_map_entry = try gpa.alignedAlloc(Link_Map, .@"8", 1);
     defer gpa.free(link_map_entry);
+    var entries: usize = 0;
     while (link_map != 0) {
+        // the chain lives in target memory and may be crafted to form a cycle
+        entries += 1;
+        if (entries > 100000) {
+            log.E("Link map chain too long, aborting", .{});
+            return error.LinkMapTooLong;
+        }
         try readMem(io, mem_file, @ptrCast(&link_map_entry[0]), link_map);
 
         log.D4("Link map entry: l_addr={x}, l_name={x}, l_ld={x}, l_next={x}, l_prev={x}",
