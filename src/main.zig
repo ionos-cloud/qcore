@@ -634,7 +634,8 @@ pub fn main(init: std.process.Init) !u8 {
         const bundle_start = std.Io.Clock.boot.now(io).toNanoseconds();
         bundle.bundleFiles(gpa, io, &out, pmaps, pid, child_hostpid) catch |err| {
             log.E("Failed to bundle files: {}", .{err});
-            return err;
+            dumpStackTrace(@errorReturnTrace());
+            retcode = 4;
         };
         const bundle_end = std.Io.Clock.boot.now(io).toNanoseconds();
         log.V("Writing bundle took {d} ms", .{@divTrunc(bundle_end - bundle_start, 1000000)});
