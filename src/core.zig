@@ -201,6 +201,16 @@ pub fn dump(gpa: std.mem.Allocator, io: std.Io, file: *output.File, child_pid: i
     // get zero-page PFN so we can omit them from the dump
     const zero_pfn = try getZeroPfn(io, page_size);
 
+    // Without CAP_SYS_ADMIN the kernel zeroes all pagemap PFNs, so the shared
+    // zero page can no longer be identified (a real zero-page PFN is never 0).
+    // In that case skip the zero-page optimization and dump every present page,
+    // otherwise every present page would look like a zero page and anonymous
+    // memory (heap, stack, loader state) would be dropped from the core.
+    const zero_pfn_valid = zero_pfn != 0;
+    if (!zero_pfn_valid)
+        log.W("pagemap PFNs unavailable (need CAP_SYS_ADMIN), dumping all present " ++
+            "pages; the core may be larger", .{});
+
     //
     // write PT_LOAD data
     //
@@ -238,7 +248,7 @@ pub fn dump(gpa: std.mem.Allocator, io: std.Io, file: *output.File, child_pid: i
                 const entry = @as(u64, @bitCast(pagemap_buffer[i*8..][0..8].*));
                 const present = (entry & PM_PRESENT) != 0;
                 const swapped = (entry & PM_SWAP) != 0;
-                const is_zero = (entry & PM_PFN_MASK) == zero_pfn;
+                const is_zero = zero_pfn_valid and (entry & PM_PFN_MASK) == zero_pfn;
                 const dumpable = (present and !is_zero) or map.dump_all or swapped;
                 if (search_chunk_end and !dumpable) {
                     // only read chunk until here
