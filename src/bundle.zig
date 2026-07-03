@@ -72,6 +72,14 @@ pub fn bundleFiles(gpa: std.mem.Allocator, io: std.Io, out: *output.Output, pmap
         return;
     };
     var symlinks: std.StringHashMap([]const u8) = .init(gpa);
+    defer {
+        var sit = symlinks.iterator();
+        while (sit.next()) |kv| {
+            gpa.free(kv.key_ptr.*);
+            gpa.free(kv.value_ptr.*);
+        }
+        symlinks.deinit();
+    }
     for (paths) |path| {
         if (path.len == 0 or path[0] != '/') {
             log.D3("Skipping invalid path from linker section: {s}", .{path});
@@ -315,6 +323,7 @@ fn resolveTargetSymlink(gpa: std.mem.Allocator, io: std.Io, out: *output.Output,
         var path_change = false;
         var it = std.mem.tokenizeScalar(u8, current_path, '/');
         var checked_path: std.ArrayList(u8) = .empty;
+        defer checked_path.deinit(gpa);
         while (it.next()) |component| {
             log.D4("Checking component {s} in path {s}", .{component, current_path});
             try checked_path.print(gpa, "/{s}", .{component});
@@ -345,7 +354,15 @@ fn resolveTargetSymlink(gpa: std.mem.Allocator, io: std.Io, out: *output.Output,
                         return error.ConflictingSymlink;
                     }
                 } else {
-                    try symlinks.put(checked_path.items, link_target);
+                    // the map outlives checked_path and the link buffers
+                    // scope errdefer to the put. After that they are owned by the map.
+                    {
+                        const key = try gpa.dupe(u8, checked_path.items);
+                        errdefer gpa.free(key);
+                        const val = try gpa.dupe(u8, link_target);
+                        errdefer gpa.free(val);
+                        try symlinks.put(key, val);
+                    }
                     const name = try std.fmt.bufPrint(&name_buf, "root{s}",
                         .{checked_path.items});
                     out.addSymlink(name, link_target) catch |err| {
