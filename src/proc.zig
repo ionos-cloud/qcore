@@ -252,20 +252,25 @@ pub fn parseMaps(gpa: std.mem.Allocator, content: []const u8) !Maps {
         const start_end = parts.next();
         if (start_end) |v| {
             if (std.mem.endsWith(u8, v, ":")) {
+                if (maps.entries.items.len == 0) {
+                    log.E("Detail line before any map entry: {s}", .{line});
+                    return error.ParseFailed;
+                }
+                const last = &maps.entries.items[maps.entries.items.len - 1];
                 if (std.mem.startsWith(u8, v, "VmFlags:")) {
                     if (std.mem.find(u8, line, " dd") != null) {
                         log.D1("found dd flag", .{});
                         // set previous map to dont_dump
-                        maps.entries.items[maps.entries.items.len - 1].dont_dump = true;
+                        last.dont_dump = true;
                     }
                     if (std.mem.find(u8, line, " sh") != null) {
-                        maps.entries.items[maps.entries.items.len - 1].shared = true;
+                        last.shared = true;
                     }
                     if (std.mem.find(u8, line, " ht") != null) {
-                        maps.entries.items[maps.entries.items.len - 1].hugetlb = true;
+                        last.hugetlb = true;
                     }
                     if (std.mem.find(u8, line, " io") != null) {
-                        maps.entries.items[maps.entries.items.len - 1].vm_io = true;
+                        last.vm_io = true;
                     }
                 } else if (std.mem.startsWith(u8, v, "Anonymous:")) {
                     if (parts.next()) |anon| {
@@ -273,7 +278,7 @@ pub fn parseMaps(gpa: std.mem.Allocator, content: []const u8) !Maps {
                             log.E("Failed to parse anonymous size: {s}", .{anon});
                             return err;
                         };
-                        maps.entries.items[maps.entries.items.len - 1].anonymous = anon_size;
+                        last.anonymous = anon_size;
                     }
                 } else if (std.mem.startsWith(u8, v, "Swap:")) {
                     if (parts.next()) |sw| {
@@ -281,7 +286,7 @@ pub fn parseMaps(gpa: std.mem.Allocator, content: []const u8) !Maps {
                             log.E("Failed to parse swap size: {s}", .{sw});
                             return err;
                         };
-                        maps.entries.items[maps.entries.items.len - 1].swap = swap_size;
+                        last.swap = swap_size;
                     }
                 }
                 continue;
