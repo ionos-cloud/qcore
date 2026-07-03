@@ -628,7 +628,7 @@ fn addPrpsinfo(gpa: Allocator, io: std.Io, notes: *Notes, child: i32,
     defer gpa.free(cmdline);
     // replace all 0 bytes with spaces to join the arguments
     // leave the terminator alone
-    for (cmdline[0..cmdline.len-1]) |*b| {
+    for (cmdline[0..cmdline.len -| 1]) |*b| {
         if (b.* == 0) {
             b.* = ' ';
         }
