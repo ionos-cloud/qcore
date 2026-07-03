@@ -145,7 +145,7 @@ fn forkTarget(gpa: std.mem.Allocator, io: Io, pid: i32, syscall_addr: usize, npr
     // inject fork into child
     //
     const inject_start = std.Io.Clock.boot.now(io).toNanoseconds();
-    const child_nspid, const child_hostpid = try process.cloneChild(i_pid, syscall_addr,
+    const child_nspid, const child_hostpid = try process.cloneChild(io, i_pid, syscall_addr,
         rlim.cur);
     const inject_end = std.Io.Clock.boot.now(io).toNanoseconds();
     log.V("Fork took {d}ms", .{@divTrunc(inject_end - inject_start, 1000000)});

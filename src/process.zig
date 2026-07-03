@@ -198,7 +198,19 @@ fn rewindSyscall(regs: user.user_regs_struct) user.user_regs_struct {
 }
 
 
-pub fn cloneChild(pid: i32, syscall_addr: usize, rlim: usize) !struct { i32, i32 }
+fn setOomScoreAdj(io: std.Io, pid: i32, score: i32) !void {
+    var path_buf: [64]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "/proc/{d}/oom_score_adj", .{pid});
+
+    const file = try std.Io.Dir.openFileAbsolute(io, path, .{ .mode = .write_only });
+    defer file.close(io);
+
+    var val_buf: [16]u8 = undefined;
+    const val = try std.fmt.bufPrint(&val_buf, "{d}", .{score});
+    try file.writeStreamingAll(io, val);
+}
+
+pub fn cloneChild(io: std.Io, pid: i32, syscall_addr: usize, rlim: usize) !struct { i32, i32 }
 {
     const original_mask = try blockSignals(pid);
     const stack_size = 2048;
@@ -299,6 +311,14 @@ pub fn cloneChild(pid: i32, syscall_addr: usize, rlim: usize) !struct { i32, i32
     };
     const child_hostpid: i32 = @intCast(eventmsg);
     log.D1("Payload clone created child with host PID {d}", .{child_hostpid});
+
+    //
+    // make the dump clone the first target of the OOM killer, so memory
+    // pressure caused by our COW clone never takes out other processes
+    //
+    setOomScoreAdj(io, child_hostpid, 1000) catch |err| {
+        log.E("Failed to set oom_score_adj for PID {d}: {}", .{child_hostpid, err});
+    };
 
     //
     // continue the host to int3
