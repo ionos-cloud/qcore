@@ -6,6 +6,11 @@ const log = @import("log.zig");
 const elf = std.elf;
 const elf64 = std.elf.Elf64;
 
+// Upper bounds for values taken from the target's (untrusted) memory, so a
+// crafted binary cannot force an unbounded allocation or an endless list walk.
+const max_dynamic_size = 16 * 1024 * 1024; // PT_DYNAMIC section
+const max_link_map_entries = 65536;        // shared objects in the link map chain
+
 //
 // add executables and libraries to allow standalone debugging of the dump
 //
@@ -277,7 +282,14 @@ fn extractPathsFromLinkerSection(gpa: std.mem.Allocator, io: std.Io, page_size: 
 
     var link_map_entry = try gpa.alignedAlloc(Link_Map, .@"8", 1);
     defer gpa.free(link_map_entry);
+    var entries: usize = 0;
     while (link_map != 0) {
+        // the chain lives in target memory and may be crafted to form a cycle
+        entries += 1;
+        if (entries > max_link_map_entries) {
+            log.E("Link map chain exceeds {d} entries, aborting", .{max_link_map_entries});
+            return error.LinkMapTooLong;
+        }
         try readMem(io, mem_file, @ptrCast(&link_map_entry[0]), link_map);
 
         log.D4("Link map entry: l_addr={x}, l_name={x}, l_ld={x}, l_next={x}, l_prev={x}",
