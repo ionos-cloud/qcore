@@ -21,6 +21,25 @@ const PTRACE = std.os.linux.PTRACE;
 // to use it directly.
 pub extern "c" fn prlimit(pid: usize, resource: usize, new_limit: usize, old_limit: usize) c_int;
 
+// x86-64 struct statfs, not wrapped by the standard library. All fields are
+// 8 bytes wide on this architecture.
+const Statfs = extern struct {
+    f_type: i64,
+    f_bsize: i64,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: [2]i32,
+    f_namelen: i64,
+    f_frsize: i64,
+    f_flags: i64,
+    f_spare: [4]i64,
+};
+
+pub extern "c" fn statfs(path: [*:0]const u8, buf: *Statfs) c_int;
+
 fn usage(program_name: []const u8) void {
     std.debug.print(
         \\Usage: {s} [options] <pid>
@@ -42,7 +61,8 @@ fn usage(program_name: []const u8) void {
         \\  -c        : directly generate a compressed archive
         \\  -f        : force operation even though seccomp is enabled. It cannot (yet)
         \\            : detect the exact seccomp filters. Depending on these, it might
-        \\            : or might not be safe to proceed.
+        \\            : or might not be safe to proceed. Also proceeds when the
+        \\            : estimated core size exceeds the free space on the output.
         \\  -j <n>    : number of threads to use (default num CPUs)
         \\  -o <path> : output path
         \\  -q        : decrease verbosity
@@ -337,6 +357,51 @@ fn extractStateStatus(gpa: std.mem.Allocator, thread_info: *process.ThreadInfo, 
     return .{ main_state.?, main_status.?, maps };
 }
 
+// Pre-flight, pre-fork disk space gate. Estimates the core size from the
+// target's smaps and refuses to proceed if the destination clearly lacks the
+// space, so a doomed dump never disturbs the target.
+// Any failure to obtain the numbers is non-fatal: we log and proceed.
+fn checkFreeSpace(gpa: std.mem.Allocator, io: Io, pid: i32, output_path: []const u8,
+    force: bool) !void
+{
+    const dir = std.fs.path.dirname(output_path) orelse ".";
+
+    var dir_buf: [std.posix.PATH_MAX]u8 = undefined;
+    const dir_z = try std.fmt.bufPrintZ(&dir_buf, "{s}", .{dir});
+
+    var sfs: Statfs = undefined;
+    if (statfs(dir_z, &sfs) != 0) {
+        log.W("Could not query free space on {s}: {}, skipping space check",
+            .{dir, std.c._errno()});
+        return;
+    }
+    const free_bytes = sfs.f_bavail * @as(u64, @intCast(sfs.f_bsize));
+
+    var maps = proc.readMaps(gpa, io, pid) catch |err| {
+        log.W("Could not read maps for space estimate: {}, skipping space check", .{err});
+        return;
+    };
+    defer maps.deinit();
+    const estimate = core.estimateCoreSize(maps);
+
+    log.V("Estimated core size {d} bytes, {d} bytes free on {s}",
+        .{estimate, free_bytes, dir});
+
+    if (free_bytes >= estimate)
+        return;
+
+    if (force) {
+        log.W("Insufficient free space (estimate ~{d} bytes, {d} available), " ++
+            "proceeding due to force flag.", .{estimate, free_bytes});
+        return;
+    }
+
+    log.E("Insufficient free space on {s}: estimated core needs ~{d} bytes, " ++
+        "only {d} available.", .{dir, estimate, free_bytes});
+    log.E("  use -f to ignore.", .{});
+    return error.InsufficientDiskSpace;
+}
+
 fn signalHandler(_: std.posix.SIG) callconv(.c) void {
     globals.interrupted.store(true, .seq_cst);
 }
@@ -547,6 +612,12 @@ pub fn main(init: std.process.Init) !u8 {
     }
 
     const output_type: output.OutputType = if (compress) .archive else .fs;
+
+    //
+    // fail-fast: refuse the dump if the destination clearly lacks the space
+    // before we disturb the target
+    //
+    try checkFreeSpace(gpa, io, pid, output_path, force);
 
     var out = output.open(gpa, io, output_path, output_type) catch |err| {
         log.E("Failed to open output: {}", .{err});

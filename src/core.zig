@@ -10,6 +10,7 @@ const Allocator = std.mem.Allocator;
 
 const Notes = std.ArrayList(u8);
 const _SC_CLK_TCK = 2;
+const kib = 1024;
 
 pub fn dump(gpa: std.mem.Allocator, io: std.Io, file: *output.File, child_pid: i32,
     pmaps: proc.Maps, thread_info: process.ThreadInfo, target_state: proc.State,
@@ -365,6 +366,62 @@ fn initMapFilter(map: *proc.MapsEntry, mem_file: std.Io.File, io: std.Io,
     }
 
     map.dump_len = 0;
+}
+
+// Estimate the logical (uncompressed, pre-sparse) core size from smaps
+// metadata alone, without reading target memory. This mirrors the dumpability
+// decisions in initMapFilter: mappings that are dumped in full contribute
+// their whole size, page-by-page mappings contribute their resident anonymous
+// plus swapped bytes.
+//
+// The result tracks the core's apparent size, which is an upper bound on the
+// actual disk usage: the real dump writes zero pages as sparse holes and, for
+// archives, compresses the data. The small ELF-header pages of clean file
+// mappings and the note section are not counted, so it can be off by a few
+// pages. It is meant only as a pre-flight sanity check.
+pub fn estimateCoreSize(maps: proc.Maps) usize {
+    var total: usize = 0;
+
+    for (maps.entries.items) |map| {
+        // skip kernel mappings
+        if (map.start & (1 << 63) != 0)
+            continue;
+        if (map.dont_dump or map.vm_io)
+            continue;
+
+        if (map.pathname) |p| {
+            if (std.mem.eql(u8, p, "[vdso]")) {
+                total += map.end - map.start;
+                continue;
+            }
+        }
+
+        if (map.hugetlb) {
+            if (!map.shared and map.ino != 0)
+                total += map.end - map.start;
+            continue;
+        }
+
+        // smaps reports Anonymous/Swap in kibibytes
+        const anon = (map.anonymous orelse 0) * kib;
+        const swap = (map.swap orelse 0) * kib;
+
+        // shared anonymous mappings are dumped page by page
+        if (map.shared and map.ino == 0) {
+            total += anon + swap;
+            continue;
+        }
+
+        if (anon > 0 or swap > 0) {
+            if (map.ino != 0) {
+                total += map.end - map.start; // dirty file mapping: dumped in full
+            } else {
+                total += anon + swap;         // anonymous: resident + swapped
+            }
+        }
+    }
+
+    return total;
 }
 
 fn addNote(gpa: Allocator, notes: *Notes, ntype: u32,
