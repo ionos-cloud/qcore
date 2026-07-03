@@ -10,12 +10,28 @@ const Allocator = std.mem.Allocator;
 
 const ptrace = std.posix.ptrace;
 const PTRACE = std.os.linux.PTRACE;
+const SYS = std.os.linux.SYS;
+const MAP_PRIVATE: u32 = @bitCast(std.os.linux.MAP{ .TYPE = .PRIVATE });
+const MAP_ANONYMOUS: u32 = 1 << @bitOffsetOf(std.os.linux.MAP, "ANONYMOUS");
+const PROT_READ: u32 = @bitCast(std.os.linux.PROT{ .READ = true });
+const PROT_WRITE: u32 = @bitCast(std.os.linux.PROT{ .WRITE = true });
+const PROT_EXEC: u32 = @bitCast(std.os.linux.PROT{ .EXEC = true });
 
-// from /usr/include/linux/ptrace.h
-const NT_X86_XSTATE: usize = 0x202; // from /usr/include/linux/elf.h
+// from /usr/include/linux/elf.h
+pub const NT_X86_XSTATE: u32 = 0x202;
+
+// the x86-64 `syscall` instruction (0f 05), little-endian in memory
+const SYSCALL_OPCODE: u16 = 0x050f;
 
 // from /usr/include/linux/wait.h
 const __WALL: u32 = 0x40000000;
+
+// kernel-internal restart pseudo-errnos, from include/linux/errno.h. A syscall
+// interrupted by our seize reports one of these in rax and must be rewound.
+const ERESTARTSYS = 512;
+const ERESTARTNOINTR = 513;
+const ERESTARTNOHAND = 514;
+const ERESTART_RESTARTBLOCK = 516;
 
 // for convenience
 const usize_neg_1: usize = @bitCast(@as(isize, -1));
@@ -186,11 +202,11 @@ fn unblockSignals(pid: i32, original_mask: u64) void {
 fn rewindSyscall(regs: user.user_regs_struct) user.user_regs_struct {
     var restart_regs = regs;
     const rax_i64 = @as(i64, @bitCast(regs.rax));
-    if (rax_i64 == -512 or rax_i64 == -513 or rax_i64 == -514) {
+    if (rax_i64 == -ERESTARTSYS or rax_i64 == -ERESTARTNOINTR or rax_i64 == -ERESTARTNOHAND) {
         restart_regs.rax = regs.orig_rax; // restore original syscall
         restart_regs.rip -= 2;            // rewind to syscall instruction
-    } else if (rax_i64 == -516) {
-        restart_regs.rax = 219;           // __NR_restart_syscall
+    } else if (rax_i64 == -ERESTART_RESTARTBLOCK) {
+        restart_regs.rax = @intFromEnum(SYS.restart_syscall);
         restart_regs.rip -= 2;            // rewind to syscall instruction
     }
 
@@ -368,11 +384,11 @@ pub fn cloneChild(io: std.Io, pid: i32, syscall_addr: usize, rlim: usize) !struc
 fn mmap(pid: i32, regs_in: *const user.user_regs_struct, syscall_addr: usize, len: usize) !usize {
     var regs = regs_in.*;
     regs.orig_rax = usize_neg_1;
-    regs.rax = 9; // __NR_mmap
+    regs.rax = @intFromEnum(SYS.mmap);
     regs.rdi = 0; // addr
     regs.rsi = len;
-    regs.rdx = 7; // prot rwx
-    regs.r10 = 0x22; // std.os.MAP_ANONYMOUS | std.os.MAP_PRIVATE; // flags
+    regs.rdx = PROT_READ | PROT_WRITE | PROT_EXEC;
+    regs.r10 = MAP_ANONYMOUS | MAP_PRIVATE;
     regs.r8 = @bitCast(@as(i64, -1)); // fd
     regs.r9 = 0; // offset
     regs.rip = syscall_addr;
@@ -388,7 +404,7 @@ fn munmap(pid: i32, regs_in: *const user.user_regs_struct, syscall_addr: usize,
 {
     var regs = regs_in.*;
     regs.orig_rax = usize_neg_1;
-    regs.rax = 11; // __NR_munmap
+    regs.rax = @intFromEnum(SYS.munmap);
     regs.rdi = addr; // addr
     regs.rsi = len;
     regs.rip = syscall_addr;
@@ -438,7 +454,7 @@ fn runSyscall(pid: i32, regs: *const user.user_regs_struct) !c_ulonglong {
     log.D1("Verify the syscall is still there at {x} for PID {d}", .{syscall_addr, pid});
     // can't use std.posix.ptrace here, as it does not return the data
     const orig = std.c.ptrace(PTRACE.PEEKTEXT, pid, @ptrFromInt(syscall_addr), null);
-    if (orig & 0xffff != 0x050f) { // 0x0f05 is the syscall instruction
+    if (orig & 0xffff != SYSCALL_OPCODE) {
         log.E("Unexpected code at syscall address {x} for PID {d}: {x}",
             .{syscall_addr, pid, orig});
         return error.InvalidSyscallAddress;
@@ -483,10 +499,10 @@ pub fn waitChild(pid: i32, child: i32, syscall_addr: usize) !void {
 
     regs.orig_rax = usize_neg_1;
     regs.rip = syscall_addr;
-    regs.rax = 61;
+    regs.rax = @intFromEnum(SYS.wait4);
     regs.rdi = @intCast(child);
     regs.rsi = 0;
-    regs.rdx = 0x40000000;  // __WALL
+    regs.rdx = __WALL;
     regs.r10 = 0;
     regs.rsp -= 128; // Red zone clearance, not strictly necessary
 

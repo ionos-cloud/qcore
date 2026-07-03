@@ -37,7 +37,7 @@ files: std.StringHashMap(File),
 
 const Fields = @This();
 
-// Files from /proc/<pid/
+// Files from /proc/<pid>/
 const proc_pid_files = [_][]const u8 {
     "smaps", "smaps_rollup", "status", "stat",
     "cmdline", "environ", "limits", "cgroup",

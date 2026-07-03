@@ -11,6 +11,18 @@ const Allocator = std.mem.Allocator;
 const Notes = std.ArrayList(u8);
 const _SC_CLK_TCK = 2;
 
+// ELF core note types, from /usr/include/linux/elf.h
+const NT_PRSTATUS: u32 = 1;
+const NT_FPREGSET: u32 = 2;
+const NT_PRPSINFO: u32 = 3;
+const NT_AUXV: u32 = 6;
+const NT_FILE: u32 = 0x46494C45; // "FILE"
+
+// pagemap entry bits, from kernel fs/proc/task_mmu.c (not in a uapi header)
+const PM_PRESENT: u64 = 1 << 63;
+const PM_SWAP: u64 = 1 << 62;
+const PM_PFN_MASK: u64 = (1 << 55) - 1;
+
 pub fn dump(gpa: std.mem.Allocator, io: std.Io, file: *output.File, child_pid: i32,
     pmaps: proc.Maps, thread_info: process.ThreadInfo, target_state: proc.State,
     target_status: proc.Status) !void
@@ -223,9 +235,9 @@ pub fn dump(gpa: std.mem.Allocator, io: std.Io, file: *output.File, child_pid: i
             var chunk_end_zeros: usize = 0;
             for (0..chunk_size / page_size) |i| {
                 const entry = @as(u64, @bitCast(pagemap_buffer[i*8..][0..8].*));
-                const present = (entry & (1 << 63)) != 0;
-                const swapped = (entry & (1 << 62)) != 0;
-                const is_zero = (entry & ((1 << 55) - 1)) == zero_pfn;
+                const present = (entry & PM_PRESENT) != 0;
+                const swapped = (entry & PM_SWAP) != 0;
+                const is_zero = (entry & PM_PFN_MASK) == zero_pfn;
                 const dumpable = (present and !is_zero) or map.dump_all or swapped;
                 if (search_chunk_end and !dumpable) {
                     // only read chunk until here
@@ -394,8 +406,7 @@ fn addAuxv(gpa: Allocator, notes: *Notes, io: std.Io, pid: i32) !void {
     };
     defer gpa.free(auxv);
 
-    // 6 == NT_AUXV
-    try addNote(gpa, notes, 6, "CORE", auxv);
+    try addNote(gpa, notes, NT_AUXV, "CORE", auxv);
 }
 
 fn addPrstatus(gpa: Allocator, notes: *Notes, entry: process.ThreadInfoEntry) !void
@@ -493,14 +504,11 @@ fn addPrstatus(gpa: Allocator, notes: *Notes, entry: process.ThreadInfoEntry) !v
         .fpvalid = 1,
     };
 
-    // 1 == NT_PRSTATUS
-    try addNote(gpa, notes, 1, "CORE", std.mem.asBytes(&prstatus));
+    try addNote(gpa, notes, NT_PRSTATUS, "CORE", std.mem.asBytes(&prstatus));
 
-    // 2 == NT_FPREGSET
-    try addNote(gpa, notes, 2, "CORE", entry.xstate[0..512]);
+    try addNote(gpa, notes, NT_FPREGSET, "CORE", entry.xstate[0..512]);
 
-    // 0x202 == NT_X86_XSTATE
-    try addNote(gpa, notes, 0x202, "LINUX", entry.xstate);
+    try addNote(gpa, notes, process.NT_X86_XSTATE, "LINUX", entry.xstate);
 }
 
 fn addPrpsinfo(gpa: Allocator, io: std.Io, notes: *Notes, child: i32,
@@ -572,8 +580,7 @@ fn addPrpsinfo(gpa: Allocator, io: std.Io, notes: *Notes, child: i32,
     @memcpy(prpsinfo.pr_psargs[0..cmd_len], cmdline[0..cmd_len]);
     prpsinfo.pr_psargs[cmd_len] = 0; // ensure null termination
 
-    // 3 == NT_PRPSINFO
-    try addNote(gpa, notes, 3, "CORE", std.mem.asBytes(&prpsinfo));
+    try addNote(gpa, notes, NT_PRPSINFO, "CORE", std.mem.asBytes(&prpsinfo));
 }
 
 fn addFile(gpa: Allocator, notes: *Notes, pmaps: proc.Maps, page_size: usize) !void
@@ -611,8 +618,7 @@ fn addFile(gpa: Allocator, notes: *Notes, pmaps: proc.Maps, page_size: usize) !v
     try note_data.appendSlice(gpa, body.items);
 
     log.D3("file note data len: {d}", .{note_data.items.len});
-    // 0x46494C45 == NT_FILE
-    try addNote(gpa, notes, 0x46494C45, "CORE", note_data.items); // "FILE"
+    try addNote(gpa, notes, NT_FILE, "CORE", note_data.items);
 }
 
 // to get the zero PFN, we map a single page for us, read it to get the PFN assigned,
@@ -650,7 +656,7 @@ fn getZeroPfn(io: std.Io, page_size: usize) !u64
         return error.ShortPagemapRead;
     }
 
-    const zero_pfn = @as(u64, @bitCast(buffer)) & ((1 << 55) - 1);
+    const zero_pfn = @as(u64, @bitCast(buffer)) & PM_PFN_MASK;
     log.D2("Zero page PFN: {x}", .{zero_pfn});
     return zero_pfn;
 }
