@@ -367,9 +367,11 @@ fn collectNetlink(gpa: std.mem.Allocator, io: std.Io, pid: i32, af: u8, proto: u
         return err;
     };
     defer target_ns.close(io);
-    const ret = std.os.linux.setns(target_ns.handle, std.os.linux.CLONE.NEWNET);
+    // setns is a raw syscall wrapper returning a usize, so a failure is encoded
+    // as -errno in the return value rather than in C errno.
+    const ret: isize = @bitCast(std.os.linux.setns(target_ns.handle, std.os.linux.CLONE.NEWNET));
     if (ret < 0) {
-        log.E("Failed to setns to target netns: {}", .{std.c._errno()});
+        log.E("Failed to setns to target netns: errno {d}", .{-ret});
         return error.SetNsFailedErro;
     }
 
