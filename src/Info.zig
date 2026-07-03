@@ -801,7 +801,7 @@ fn formatAddr(gpa: std.mem.Allocator, parsed: *std.ArrayList(u8), family: u8, ad
 fn parseDiagMessageInet(gpa: std.mem.Allocator, parsed: *std.ArrayList(u8),
     raw: []const u8) !void
 {
-    if (raw.len < @sizeOf(diag.nlmsghdr)) {
+    if (raw.len < @sizeOf(diag.inet_diag_msg)) {
         log.E("inet diag message too short: {d}", .{raw.len});
         return error.NetlinkParseFailed;
     }
