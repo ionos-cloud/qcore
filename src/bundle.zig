@@ -195,6 +195,10 @@ fn extractPathsFromLinkerSection(gpa: std.mem.Allocator, io: std.Io, page_size: 
         log.E("ELF program header offset is not aligned to 8 bytes: {x}", .{ehdr.phoff});
         return error.InvalidElf;
     }
+    if (ehdr.phoff >= page_size) {
+        log.E("ELF program header offset out of bounds: {x}", .{ehdr.phoff});
+        return error.InvalidElf;
+    }
     const phnum = @min(ehdr.phnum, (page_size - ehdr.phoff) / ehdr.phentsize);
     const phdrs_many_ptr: [*]elf64.Phdr = @ptrCast(@alignCast(mem_buf.ptr + ehdr.phoff));
     const phdrs = phdrs_many_ptr[0..phnum];
