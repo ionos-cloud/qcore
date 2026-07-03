@@ -500,12 +500,19 @@ fn addPrstatus(gpa: Allocator, notes: *Notes, entry: process.ThreadInfoEntry) !v
         fpvalid: c_int = 0,                 // True if math copro being used.
     };
 
+    // status
+    if (entry.status == null) {
+        log.E("process status not found", .{});
+        return error.StatusNotFound;
+    }
+    const status = &entry.status.?;
+
     // signals
-    const sigpend_str = entry.status.?.get("SigPnd") orelse {
+    const sigpend_str = status.get("SigPnd") orelse {
         log.E("SigPnd not found in process status.", .{});
         return error.SigPndNotFound;
     };
-    const sighold_str = entry.status.?.get("SigBlk") orelse {
+    const sighold_str = status.get("SigBlk") orelse {
         log.E("SigBlk not found in process status.", .{});
         return error.SigBlkNotFound;
     };
@@ -524,21 +531,15 @@ fn addPrstatus(gpa: Allocator, notes: *Notes, entry: process.ThreadInfoEntry) !v
     const cutime_usec = @divTrunc(state.cutime * 1_000_000, hz_i);
     const cstime_usec = @divTrunc(state.cstime * 1_000_000, hz_i);
 
-    // status
-    if (entry.status == null) {
-        log.E("process status not found", .{});
-        return error.StatusNotFound;
-    }
-
-    const pid = proc.getNSPidFromStatus(&entry.status.?, "NSpid") catch |err| {
+    const pid = proc.getNSPidFromStatus(status, "NSpid") catch |err| {
         log.E("Failed to get NSpid from status: {}", .{err});
         return err;
     };
-    const pgrp = proc.getNSPidFromStatus(&entry.status.?, "NSpgid") catch |err| {
+    const pgrp = proc.getNSPidFromStatus(status, "NSpgid") catch |err| {
         log.E("Failed to get NSpid from status: {}", .{err});
         return err;
     };
-    const sid = proc.getNSPidFromStatus(&entry.status.?, "NSsid") catch |err| {
+    const sid = proc.getNSPidFromStatus(status, "NSsid") catch |err| {
         log.E("Failed to get NSpid from status: {}", .{err});
         return err;
     };
