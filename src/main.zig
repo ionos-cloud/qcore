@@ -383,7 +383,7 @@ fn formatCurrTime(gpa: std.mem.Allocator) ![]const u8 {
 //  - compose network state summary file from all collected info
 //  - actually free memory for the fun of it
 //
-pub fn main(init: std.process.Init) !u8 {
+pub fn main(init: std.process.Init) !void {
     const gpa: std.mem.Allocator = init.arena.allocator();
 
     const args = try init.minimal.args.toSlice(gpa);
@@ -415,7 +415,7 @@ pub fn main(init: std.process.Init) !u8 {
                         if (optind == args.len - 1) {
                             std.debug.print("-j requires an argument\n", .{});
                             usage(args[0]);
-                            return 1;
+                            return error.InvalidArgument;
                         }
                         nproc = try std.fmt.parseInt(usize, args[optind + 1], 10);
                         optind += 1;
@@ -429,7 +429,7 @@ pub fn main(init: std.process.Init) !u8 {
                         if (optind == args.len - 1) {
                             std.debug.print("-o requires an argument\n", .{});
                             usage(args[0]);
-                            return 1;
+                            return error.InvalidArgument;
                         }
                         path_prefix = args[optind + 1];
                         optind += 1;
@@ -445,18 +445,18 @@ pub fn main(init: std.process.Init) !u8 {
                 },
                 else => {
                     usage(args[0]);
-                    return 1;
+                    return error.InvalidArgument;
                 },
             }
         }
     }
     if (optind == args.len) {
         usage(args[0]);
-        return 1;
+        return error.InvalidArgument;
     }
     if (optind != args.len - 1) {
         std.debug.print("Only one positional argument allowed\n", .{});
-        return 1;
+        return error.InvalidArgument;
     }
     const pid_str = args[optind];
     const pid = try std.fmt.parseInt(i32, pid_str, 10);
@@ -550,10 +550,10 @@ pub fn main(init: std.process.Init) !u8 {
 
     var out = output.open(gpa, io, output_path, output_type) catch |err| {
         log.E("Failed to open output: {}", .{err});
-        return 1;
+        return err;
     };
 
-    var retcode: u8 = 0;
+    var retcode: ?anyerror = null;
 
     //
     // install signal handlers
@@ -582,7 +582,7 @@ pub fn main(init: std.process.Init) !u8 {
     //
     const syscall_addr = process.findSyscall(gpa, io, pid) catch |err| {
         log.E("Failed to find syscall instruction in target: {}", .{err});
-        return 1;
+        return err;
     };
 
     //
@@ -593,7 +593,7 @@ pub fn main(init: std.process.Init) !u8 {
             = forkTarget(gpa, io, pid, syscall_addr, nproc) catch |err|
     {
         log.E("Failed to fork target: {}", .{err});
-        return 1;
+        return err;
     };
     const fork_end = std.Io.Clock.boot.now(io).toNanoseconds();
     log.V("fork took {d}ms overall", .{@divTrunc(fork_end - fork_start, 1000000)});
@@ -613,15 +613,15 @@ pub fn main(init: std.process.Init) !u8 {
     dumpThreads(gpa, &out, thread_info) catch |err| {
         log.E("Failed to dump threads: {}", .{err});
         dumpStackTrace(@errorReturnTrace());
-        retcode = 1;
+        retcode = err;
     };
-    if (retcode == 0) {
+    if (retcode == null) {
         dumpTarget(gpa, io, &out, child_hostpid, pmaps, thread_info, target_state, target_status,
             compress) catch |err|
         {
             log.E("Failed to dump target: {}", .{err});
             dumpStackTrace(@errorReturnTrace());
-            retcode = 2;
+            retcode = err;
         };
     }
     const dump_end = std.Io.Clock.boot.now(io).toNanoseconds();
@@ -630,12 +630,12 @@ pub fn main(init: std.process.Init) !u8 {
     //
     // on request add all libraries and files
     //
-    if (do_bundle) {
+    if (retcode == null and do_bundle) {
         const bundle_start = std.Io.Clock.boot.now(io).toNanoseconds();
         bundle.bundleFiles(gpa, io, &out, pmaps, pid, child_hostpid) catch |err| {
             log.E("Failed to bundle files: {}", .{err});
             dumpStackTrace(@errorReturnTrace());
-            retcode = 4;
+            retcode = err;
         };
         const bundle_end = std.Io.Clock.boot.now(io).toNanoseconds();
         log.V("Writing bundle took {d} ms", .{@divTrunc(bundle_end - bundle_start, 1000000)});
@@ -647,14 +647,14 @@ pub fn main(init: std.process.Init) !u8 {
     cleanupTarget(gpa, io, pid, child_nspid, child_hostpid, syscall_addr) catch |err| {
         log.E("Failed to clean up target: {}", .{err});
         dumpStackTrace(@errorReturnTrace());
-        return 3;
+        return err;
     };
 
     const detach_end = std.Io.Clock.boot.now(io).toNanoseconds();
     log.V("Detach took {d} ms", .{@divTrunc(detach_end - dump_end, 1000000)});
 
-    if (retcode != 0)
-        return retcode;
+    if (retcode) |err|
+        return err;
 
     //
     // from here on, returning err is fine again. We can also enable signals again
@@ -714,5 +714,5 @@ pub fn main(init: std.process.Init) !u8 {
         return err;
     };
 
-    return retcode;
+    return;
 }
