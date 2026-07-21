@@ -7,16 +7,18 @@ const ar = @cImport({
 
 const OutputFs = struct {
     io: std.Io,
-    dir: std.Io.Dir,
+    dir: ?std.Io.Dir,
+    name: []const u8,
 };
 
 const zeroLen = 65536;
 const OutputArchive = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
-    archive: *ar.struct_archive,
+    archive: ?*ar.struct_archive,
     prefix: []const u8,
     zeros: []u8,    // zeroLen size
+    filename: []const u8,
 };
 
 const FileFs = struct {
@@ -67,11 +69,11 @@ pub const Output = union(OutputType) {
         }
         if (output.* == .fs) {
             const dirname = if (std.fs.path.dirname(name)) |d| d else "./";
-            output.fs.dir.createDirPath(output.fs.io, dirname) catch {
+            output.fs.dir.?.createDirPath(output.fs.io, dirname) catch {
                 log.E("Failed to create directory path for file: {s}", .{name});
                 return error.CreateDirFailed;
             };
-            const f = output.fs.dir.createFile(output.fs.io, name, .{}) catch {
+            const f = output.fs.dir.?.createFile(output.fs.io, name, .{}) catch {
                 log.E("Failed to create file: {s}", .{name});
                 return error.CreateFileFailed;
             };
@@ -166,11 +168,11 @@ pub const Output = union(OutputType) {
         }
         if (output.* == .fs) {
             const dirname = if (std.fs.path.dirname(name)) |d| d else "./";
-            output.fs.dir.createDirPath(output.fs.io, dirname) catch {
+            output.fs.dir.?.createDirPath(output.fs.io, dirname) catch {
                 log.E("Failed to create directory path for file: {s}", .{name});
                 return error.CreateDirFailed;
             };
-            output.fs.dir.symLink(output.fs.io, link_target, name, .{}) catch |err| {
+            output.fs.dir.?.symLink(output.fs.io, link_target, name, .{}) catch |err| {
                 log.E("Failed to create symlink {s} -> {s}: {}", .{name, link_target, err});
                 return error.CreateSymlinkFailed;
             };
@@ -218,24 +220,49 @@ pub const Output = union(OutputType) {
 
     pub fn close(output: *Output) !void {
         if (output.* == .fs) {
-            output.fs.dir.close(output.fs.io);
-        } else if (output.* == .archive) {
-            log.D1("archive close called", .{});
-            var ret: c_int = 0;
-            ret = ar.archive_write_close(output.archive.archive);
-            if (ret != ar.ARCHIVE_OK) {
-                log.E("Failed to close archive: {s}",
-                    .{ar.archive_error_string(output.archive.archive)});
-                return error.CloseArchiveFailed;
+            if (output.fs.dir) |dir| {
+                output.fs.dir = null;
+                dir.close(output.fs.io);
             }
-            ret = ar.archive_write_free(output.archive.archive);
-            if (ret != ar.ARCHIVE_OK) {
-                log.E("Failed to free archive: {s}",
-                    .{ar.archive_error_string(output.archive.archive)});
-                return error.CloseArchiveFailed;
+        } else if (output.* == .archive) {
+            if (output.archive.archive) |a| {
+                output.archive.archive = null;
+                log.D1("archive close called", .{});
+                var ret: c_int = 0;
+                ret = ar.archive_write_close(a);
+                if (ret != ar.ARCHIVE_OK) {
+                    log.E("Failed to close archive: {s}",
+                        .{ar.archive_error_string(a)});
+                    return error.CloseArchiveFailed;
+                }
+                ret = ar.archive_write_free(a);
+                if (ret != ar.ARCHIVE_OK) {
+                    log.E("Failed to free archive: {s}",
+                        .{ar.archive_error_string(a)});
+                    return error.CloseArchiveFailed;
+                }
             }
         } else {
             return error.InvalidOutputType;
+        }
+    }
+
+    pub fn remove(output: *Output) void {
+        output.close() catch |err| {
+            log.E("Failed to close output before remove: {}", .{err});
+        };
+        if (output.* == .fs) {
+            std.Io.Dir.deleteTree(std.Io.Dir.cwd(), output.fs.io, output.fs.name) catch |err| {
+                log.E("Failed to remove output directory {s}: {}", .{output.fs.name, err});
+            };
+        } else if (output.* == .archive) {
+            const cwd = std.Io.Dir.cwd();
+            cwd.deleteFile(output.archive.io, output.archive.filename) catch |err|
+            {
+                log.E("Failed to remove archive file {s}: {}", .{output.archive.filename, err});
+            };
+        } else {
+            unreachable;
         }
     }
 };
@@ -254,6 +281,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, name: []const u8, output_type: O
             .fs = OutputFs {
                 .io = io,
                 .dir = dir,
+                .name = try gpa.dupe(u8, name),
             },
         };
     } else if (output_type == .archive) {
@@ -293,6 +321,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, name: []const u8, output_type: O
                 .archive = a,
                 .prefix = try gpa.dupe(u8, name),
                 .zeros = zeros,
+                .filename = try gpa.dupe(u8, out_filename),
             },
         };
     } else {

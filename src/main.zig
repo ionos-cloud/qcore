@@ -552,6 +552,7 @@ pub fn main(init: std.process.Init) !void {
         log.E("Failed to open output: {}", .{err});
         return err;
     };
+    errdefer out.remove();
 
     var retcode: ?anyerror = null;
 
