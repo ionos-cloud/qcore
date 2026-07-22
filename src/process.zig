@@ -161,12 +161,26 @@ fn waitpid(pid: i32, comptime format: []const u8, args: anytype) !c_int {
     _ = std.c.alarm(5);
     defer _ = std.c.alarm(0);
     var status: c_int = undefined;
-    const ret = std.c.waitpid(pid, &status, __WALL);
+    var ret = std.c.waitpid(pid, &status, __WALL);
     if (ret == -1) {
         var buf = [_]u8 {0} ** 1000;
         const reason = try std.fmt.bufPrint(&buf, format, args);
         log.E("Failed to wait for PID {d} for {s}: {}", .{pid, reason, std.c._errno()});
-        return error.WaitFailed;
+
+        // waitpid is interrupted by alarm. We have to force a stop to the child and
+        // collect the stop
+        ptrace(PTRACE.INTERRUPT, pid, 0, 0) catch |err| {
+            log.E("Failed to interrupt PID {d} to recover from wait timeout: {}",
+                .{pid, err});
+            return error.WaitFailed;
+        };
+        _ = std.c.alarm(5);
+        ret = std.c.waitpid(pid, &status, __WALL);
+        if (ret == -1) {
+            log.E("Failed to wait for PID {d} for {s} after forcing a stop: {}",
+                .{pid, reason, std.c._errno()});
+            return error.WaitFailed;
+        }
     }
     return status;
 }
@@ -446,6 +460,23 @@ fn runToStop(pid: i32, singlestep: bool, expected_event: u32) !void {
         return error.WaitForStop;
     }
     if (status >> 16 != expected_event) {
+        // when we force-interrupted the target after an alarm, we have to collect
+        // the pending SIGTRAP before we can continue, otherwise the target will be killed
+        // by it when we continue
+        if (singlestep and status >> 16 == PTRACE.EVENT.STOP) {
+            log.D1("PID {d} force-stopped mid single-step, draining pending SIGTRAP", .{pid});
+            ptrace(PTRACE.CONT, pid, 0, 0) catch |err| {
+                log.E("Failed to continue PID {d} to drain pending trap: {}", .{pid, err});
+                return error.WaitForStop;
+            };
+            if (waitpid(pid, "drain pending SIGTRAP for PID {d}", .{pid})) |drain| {
+                const dst: u32 = @intCast(drain);
+                log.D1("PID {d} drained stop status=0x{x} STOPSIG={d} event={d}",
+                    .{pid, dst, std.c.W.STOPSIG(dst), dst >> 16});
+            } else |err| {
+                log.E("Failed to collect drained stop for PID {d}: {}", .{pid, err});
+            }
+        }
         log.E("PID {d} stopped with unexpected ptrace event {d}", .{pid, status >> 16});
         return error.WaitForStop;
     }
@@ -510,14 +541,17 @@ pub fn waitChild(pid: i32, child: i32, syscall_addr: usize) !void {
     regs.r10 = 0;
     regs.rsp -= 128; // Red zone clearance, not strictly necessary
 
-    // guard rail: wait max 5 seconds
-    _ = std.c.alarm(5);
-    _ = runSyscall(pid, &regs) catch |err| {
+    const ret = runSyscall(pid, &regs) catch |err| {
         log.E("Failed to run wait syscall for injection: {}", .{err});
-        _ = std.c.alarm(0);
         return err;
     };
-    _ = std.c.alarm(0);
+    const ret_i64: i64 = @bitCast(ret);
+    if (ret_i64 < 0) {
+        log.E("Injected wait4 for child {d} on PID {d} failed with errno {d}",
+            .{child, pid, -ret_i64});
+        return error.WaitChildFailed;
+    }
+    log.D1("Injected wait4 reaped PID {d} (expected {d})", .{ret_i64, child});
 }
 
 pub fn fetchThreadInfo(gpa: Allocator, pids: PidsMap, target_pid: i32) !ThreadInfo {
