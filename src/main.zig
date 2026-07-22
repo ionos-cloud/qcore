@@ -95,8 +95,8 @@ fn isSeccompEnabled(target_status: proc.Status) !bool {
     return seccomp_state_int != 0;
 }
 
-fn forkTarget(gpa: std.mem.Allocator, io: Io, pid: i32, syscall_addr: usize, nproc: usize)
-    !struct {i32, i32, process.ThreadInfo, Info }
+fn forkTarget(gpa: std.mem.Allocator, io: Io, pid: i32, syscall_addr: usize, nproc: usize,
+    child_hostpid_out: *?i32) !struct {i32, process.ThreadInfo, Info }
 {
     //
     // attach to the process and stop all threads
@@ -145,15 +145,15 @@ fn forkTarget(gpa: std.mem.Allocator, io: Io, pid: i32, syscall_addr: usize, npr
     // inject fork into child
     //
     const inject_start = std.Io.Clock.boot.now(io).toNanoseconds();
-    const child_nspid, const child_hostpid = try process.cloneChild(io, i_pid, syscall_addr,
-        rlim.cur);
+    const child_nspid = try process.cloneChild(io, i_pid, syscall_addr, rlim.cur,
+        child_hostpid_out);
     const inject_end = std.Io.Clock.boot.now(io).toNanoseconds();
     log.V("Fork took {d}ms", .{@divTrunc(inject_end - inject_start, 1000000)});
-    log.D1("Prepared injection thread with pid {}/{}", .{child_nspid, child_hostpid});
+    log.D1("Prepared injection thread with pid {}/{}", .{child_nspid, child_hostpid_out.*.?});
     log.I("Target blocked for {d}ms to fork child",
         .{@divTrunc(inject_end - grab_start, 1000000)});
 
-    return .{ child_nspid, child_hostpid, thread_info, net_info };
+    return .{ child_nspid, thread_info, net_info };
 }
 
 fn dumpThreads(gpa: std.mem.Allocator, out: *output.Output, thread_info: process.ThreadInfo)
@@ -214,59 +214,6 @@ fn dumpTarget(gpa: std.mem.Allocator, io: Io, out: *output.Output, child: i32, p
         log.E("Failed to finish file: {}", .{err});
         return err;
     };
-}
-
-fn cleanupTarget(gpa: std.mem.Allocator, io: Io, pid: i32, child_nspid: i32,
-    child_hostpid: i32, syscall_addr: usize) !void
-{
-    //
-    // send kill
-    //
-    log.D1("Killing child with pid {}", .{child_hostpid});
-    std.posix.kill(child_hostpid, std.posix.SIG.KILL) catch |err| {
-        log.E("Failed to kill forked child: {}", .{err});
-    };
-
-    //
-    // wait for child to be defunct
-    //
-    log.I("Waiting for child to become defunct.", .{});
-    while (true) {
-        const state = proc.getState(gpa, io, child_hostpid) catch |err| {
-            log.E("Failed to get process status: {}", .{err});
-            break;
-        };
-        if (state.state == 'Z')
-            break;
-        log.D1("Waiting for child, current state: {c}", .{state.state});
-        io.sleep(.fromMilliseconds(100), .awake) catch |err| {
-            log.E("Failed to sleep: {}", .{err});
-            break;
-        };
-    }
-    log.V("Child is defunct", .{});
-
-    //
-    // attach and stop the main threads
-    //
-    log.V("Reaping child", .{});
-    log.D1("Attaching to main process pid {}", .{pid});
-    const grab_start = std.Io.Clock.boot.now(io).toNanoseconds();
-    const restart_sig = try process.grabOne(pid);
-    const grab_end = std.Io.Clock.boot.now(io).toNanoseconds();
-    log.V("Grab took {d}ms", .{@divTrunc(grab_end - grab_start, 1000000)});
-    defer process.detachOne(pid, restart_sig);
-
-    //
-    // inject wait4 to reap our child
-    //
-    process.waitChild(pid, child_nspid, syscall_addr) catch |err| {
-        log.E("Failed to wait for forked child: {}", .{err});
-    };
-    const wait_end = std.Io.Clock.boot.now(io).toNanoseconds();
-    log.V("wait took {d}ms", .{@divTrunc(wait_end - grab_end, 1000000)});
-    log.I("target blocked for {d}ms to reap child",
-        .{@divTrunc(wait_end - grab_start, 1000000)});
 }
 
 //
@@ -335,6 +282,22 @@ fn extractStateStatus(gpa: std.mem.Allocator, thread_info: *process.ThreadInfo, 
     };
 
     return .{ main_state.?, main_status.?, maps };
+}
+
+fn isSameNamespace(io: Io, pid: i32) !bool {
+    var buffer: [64]u8 = undefined;
+    var ns_pid: [100]u8 = undefined;
+    var ns_self: [100]u8 = undefined;
+    const path = try std.fmt.bufPrint(&buffer, "/proc/{d}/ns/pid", .{pid});
+    const pid_len = std.Io.Dir.readLinkAbsolute(io, path, &ns_pid) catch |err| {
+        log.E("Failed to read symlink {s}: {}", .{path, err});
+        return error.ReadLinkFailed;
+    };
+    const self_len = std.Io.Dir.readLinkAbsolute(io, "/proc/self/ns/pid", &ns_self) catch |err| {
+        log.E("Failed to read symlink /proc/self/ns/pid: {}", .{err});
+        return error.ReadLinkFailed;
+    };
+    return std.mem.eql(u8, ns_pid[0..pid_len], ns_self[0..self_len]);
 }
 
 fn signalHandler(_: std.posix.SIG) callconv(.c) void {
@@ -487,6 +450,12 @@ pub fn main(init: std.process.Init) !void {
     }
 
     //
+    // are we in the same namespace as the target?
+    //
+    const same_ns = try isSameNamespace(io, pid);
+    log.D1("Target is in same namespace: {}", .{same_ns});
+
+    //
     // fetch kernel stack information pre-fork
     // unfortunately ptrace interrupts all syscall, so we can't get much information
     // during the freeze. Fetch them best-effort beforehand
@@ -590,20 +559,41 @@ pub fn main(init: std.process.Init) !void {
     // fork target
     //
     const fork_start = std.Io.Clock.boot.now(io).toNanoseconds();
-    const child_nspid, const child_hostpid, var thread_info, const net_info
-            = forkTarget(gpa, io, pid, syscall_addr, nproc) catch |err|
-    {
+    //
+    // child_hostpid is set by forkTarget as soon as the clone exists, even when
+    // the fork fails afterwards, so the cleanup below can still collect it. On
+    // failure we fall through to that cleanup via retcode rather than returning,
+    // as the clone may already have been created and reparented to the target.
+    //
+    var child_hostpid: ?i32 = null;
+    var child_nspid: ?i32 = null;
+    var thread_info: process.ThreadInfo = undefined;
+    var net_info: Info = undefined;
+    if (forkTarget(gpa, io, pid, syscall_addr, nproc, &child_hostpid)) |rv| {
+        child_nspid, thread_info, net_info = rv;
+    } else |err| {
         log.E("Failed to fork target: {}", .{err});
-        return err;
-    };
+        dumpStackTrace(@errorReturnTrace());
+        retcode = err;
+    }
     const fork_end = std.Io.Clock.boot.now(io).toNanoseconds();
     log.V("fork took {d}ms overall", .{@divTrunc(fork_end - fork_start, 1000000)});
 
     //
     // complete thread info state and status fields from net_info
     //
-    const target_state, const target_status, const pmaps =
-        try extractStateStatus(gpa, &thread_info, net_info, pid);
+    var target_state: ?proc.State = null;
+    var target_status: ?proc.Status = null;
+    var pmaps: ?proc.Maps = null;
+    if (retcode == null) {
+        if (extractStateStatus(gpa, &thread_info, net_info, pid)) |rv| {
+            target_state, target_status, pmaps = rv;
+        } else |err| {
+            log.E("Failed to extract state and status for threads: {}", .{err});
+            dumpStackTrace(@errorReturnTrace());
+            retcode = err;
+        }
+    }
 
     //
     // dump target, thread names and core file
@@ -611,14 +601,16 @@ pub fn main(init: std.process.Init) !void {
     // at least a zombie
     //
     log.I("Dumping forked target", .{});
-    dumpThreads(gpa, &out, thread_info) catch |err| {
-        log.E("Failed to dump threads: {}", .{err});
-        dumpStackTrace(@errorReturnTrace());
-        retcode = err;
-    };
     if (retcode == null) {
-        dumpTarget(gpa, io, &out, child_hostpid, pmaps, thread_info, target_state, target_status,
-            compress) catch |err|
+        dumpThreads(gpa, &out, thread_info) catch |err| {
+            log.E("Failed to dump threads: {}", .{err});
+            dumpStackTrace(@errorReturnTrace());
+            retcode = err;
+        };
+    }
+    if (retcode == null) {
+        dumpTarget(gpa, io, &out, child_hostpid.?, pmaps.?, thread_info, target_state.?,
+            target_status.?, compress) catch |err|
         {
             log.E("Failed to dump target: {}", .{err});
             dumpStackTrace(@errorReturnTrace());
@@ -633,7 +625,7 @@ pub fn main(init: std.process.Init) !void {
     //
     if (retcode == null and do_bundle) {
         const bundle_start = std.Io.Clock.boot.now(io).toNanoseconds();
-        bundle.bundleFiles(gpa, io, &out, pmaps, pid, child_hostpid) catch |err| {
+        bundle.bundleFiles(gpa, io, &out, pmaps.?, pid, child_hostpid.?) catch |err| {
             log.E("Failed to bundle files: {}", .{err});
             dumpStackTrace(@errorReturnTrace());
             retcode = err;
@@ -645,11 +637,14 @@ pub fn main(init: std.process.Init) !void {
     //
     // cleanup target
     //
-    cleanupTarget(gpa, io, pid, child_nspid, child_hostpid, syscall_addr) catch |err| {
-        log.E("Failed to clean up target: {}", .{err});
-        dumpStackTrace(@errorReturnTrace());
-        return err;
-    };
+    if (child_hostpid) |chp| {
+        const nspid: ?i32 = child_nspid orelse if (same_ns) chp else null;
+        process.cleanupTarget(gpa, io, pid, nspid, chp, syscall_addr) catch |err| {
+            log.E("Failed to clean up target: {}", .{err});
+            dumpStackTrace(@errorReturnTrace());
+            return err;
+        };
+    }
 
     const detach_end = std.Io.Clock.boot.now(io).toNanoseconds();
     log.V("Detach took {d} ms", .{@divTrunc(detach_end - dump_end, 1000000)});

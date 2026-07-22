@@ -226,7 +226,10 @@ fn setOomScoreAdj(io: std.Io, pid: i32, score: i32) !void {
     try file.writeStreamingAll(io, val);
 }
 
-pub fn cloneChild(io: std.Io, pid: i32, syscall_addr: usize, rlim: usize) !struct { i32, i32 }
+// report child_hostpid via reference so it is also available in the error case;
+// needed for cleanup
+pub fn cloneChild(io: std.Io, pid: i32, syscall_addr: usize, rlim: usize,
+    child_hostpid_out: *?i32) !i32
 {
     const original_mask = try blockSignals(pid);
     const stack_size = 2048;
@@ -328,6 +331,14 @@ pub fn cloneChild(io: std.Io, pid: i32, syscall_addr: usize, rlim: usize) !struc
     const child_hostpid: i32 = @intCast(eventmsg);
     log.D1("Payload clone created child with host PID {d}", .{child_hostpid});
 
+    child_hostpid_out.* = child_hostpid;
+    //
+    // defer detach
+    //
+    defer ptrace(PTRACE.DETACH, child_hostpid, 0, 0) catch |err| {
+        log.E("Failed to detach from child PID {d}: {}", .{child_hostpid, err});
+    };
+
     //
     // make the dump clone the first target of the OOM killer, so memory
     // pressure caused by our COW clone never takes out other processes
@@ -364,21 +375,14 @@ pub fn cloneChild(io: std.Io, pid: i32, syscall_addr: usize, rlim: usize) !struc
     }
 
     //
-    // detach from the child
-    //
-    ptrace(PTRACE.DETACH, child_hostpid, 0, 0) catch |err| {
-        log.E("Failed to detach from child PID {d}: {}", .{child_hostpid, err});
-        return err;
-    };
-
-    //
     // check payload return value, it should be a valid PID
     //
     if (regs_after.rax > std.math.maxInt(i32)) {
         log.E("Payload returned error code {x}", .{regs_after.rax});
         return error.PayloadFailed;
     }
-    return .{ @intCast(regs_after.rax), child_hostpid };
+
+    return @intCast(regs_after.rax);
 }
 
 fn mmap(pid: i32, regs_in: *const user.user_regs_struct, syscall_addr: usize, len: usize) !usize {
@@ -699,4 +703,62 @@ pub fn detachOne(pid: i32, sig: u32) void {
     ptrace(PTRACE.DETACH, pid, 0, sig) catch |err| {
         log.E("Failed to detach from PID {d}: {}", .{pid, err});
     };
+}
+
+pub fn cleanupTarget(gpa: std.mem.Allocator, io: std.Io, pid: i32, child_nspid: ?i32,
+    child_hostpid: i32, syscall_addr: usize) !void
+{
+    //
+    // send kill
+    //
+    log.D1("Killing child with pid {}", .{child_hostpid});
+    std.posix.kill(child_hostpid, std.posix.SIG.KILL) catch |err| {
+        log.E("Failed to kill forked child: {}", .{err});
+    };
+
+    if (child_nspid == null) {
+        log.D1("Child has no namespace PID, can't collect zombie", .{});
+        return;
+    }
+
+    //
+    // wait for child to be defunct
+    //
+    log.I("Waiting for child to become defunct.", .{});
+    while (true) {
+        const state = proc.getState(gpa, io, child_hostpid) catch |err| {
+            log.E("Failed to get process status: {}", .{err});
+            break;
+        };
+        if (state.state == 'Z')
+            break;
+        log.D1("Waiting for child, current state: {c}", .{state.state});
+        io.sleep(.fromMilliseconds(100), .awake) catch |err| {
+            log.E("Failed to sleep: {}", .{err});
+            break;
+        };
+    }
+    log.V("Child is defunct", .{});
+
+    //
+    // attach and stop the main threads
+    //
+    log.V("Reaping child", .{});
+    log.D1("Attaching to main process pid {}", .{pid});
+    const grab_start = std.Io.Clock.boot.now(io).toNanoseconds();
+    const restart_sig = try grabOne(pid);
+    const grab_end = std.Io.Clock.boot.now(io).toNanoseconds();
+    log.V("Grab took {d}ms", .{@divTrunc(grab_end - grab_start, 1000000)});
+    defer detachOne(pid, restart_sig);
+
+    //
+    // inject wait4 to reap our child
+    //
+    waitChild(pid, child_nspid.?, syscall_addr) catch |err| {
+        log.E("Failed to wait for forked child: {}", .{err});
+    };
+    const wait_end = std.Io.Clock.boot.now(io).toNanoseconds();
+    log.V("wait took {d}ms", .{@divTrunc(wait_end - grab_end, 1000000)});
+    log.I("target blocked for {d}ms to reap child",
+        .{@divTrunc(wait_end - grab_start, 1000000)});
 }
