@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make autoconf automake libtool pkg-config
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build (ReleaseSmall)
+        run: zig build -Doptimize=ReleaseSmall --summary all
+
+      - name: Stage stripped binary
+        run: |
+          install -m 0755 zig-out/bin/qcore qcore
+          strip qcore
+          asset="qcore-${GITHUB_REF_NAME}-x86_64-linux"
+          mv qcore "$asset"
+          sha256sum "$asset" > "$asset.sha256"
+          echo "asset=$asset" >> "$GITHUB_ENV"
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "$asset" "$asset.sha256"
