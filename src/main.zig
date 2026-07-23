@@ -24,6 +24,15 @@ pub extern "c" fn prlimit(pid: usize, resource: usize, new_limit: usize, old_lim
 fn usage(program_name: []const u8) void {
     std.debug.print(
         \\Usage: {s} [options] <pid>
+        \\  -b        : also bundle binary and executable to allow standalone debugging
+        \\  -c        : directly generate a compressed archive
+        \\  -f        : force operation even though seccomp is enabled. It cannot (yet)
+        \\            : detect the exact seccomp filters. Depending on these, it might
+        \\            : or might not be safe to proceed.
+        \\  -j <n>    : number of threads to use (default num CPUs)
+        \\  -o <path> : output path
+        \\  -q        : decrease verbosity
+        \\  -v        : increase verbosity (default 3, max 9)
         \\
         \\qcore can grab a core dump from a running process with minimal downtime.
         \\It does so by stopping the process, injecting a fork() into it, collecting
@@ -36,17 +45,6 @@ fn usage(program_name: []const u8) void {
         \\.tar.zst archive.
         \\See also the README file placed in the output.
         \\qcore is statically linked and can be used on any linux installation.
-        \\
-        \\  Options:
-        \\  -b        : also bundle binary and executable to allow standalone debugging
-        \\  -c        : directly generate a compressed archive
-        \\  -f        : force operation even though seccomp is enabled. It cannot (yet)
-        \\            : detect the exact seccomp filters. Depending on these, it might
-        \\            : or might not be safe to proceed.
-        \\  -j <n>    : number of threads to use (default num CPUs)
-        \\  -o <path> : output path
-        \\  -q        : decrease verbosity
-        \\  -v        : increase verbosity (default 3, max 9)
         \\
     , .{program_name});
     std.process.exit(1);
