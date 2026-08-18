@@ -220,6 +220,35 @@ pub fn readProcFile(gpa: std.mem.Allocator, io: std.Io, pid: i32, name: []const 
     return slurp(gpa, io, path);
 }
 
+// compare qcore's namespace of the given type ("net", "pid", ...) with the
+// target's via the /proc/<pid>/ns/<type> symlinks; returns true when both
+// resolve to the same namespace
+pub fn isSameNamespace(io: std.Io, pid: i32, ns: []const u8) !bool {
+    var self_path: [64]u8 = undefined;
+    var target_path: [64]u8 = undefined;
+    var self_link: [64]u8 = undefined;
+    var target_link: [64]u8 = undefined;
+
+    const sp = try std.fmt.bufPrint(&self_path, "/proc/self/ns/{s}", .{ns});
+    const tp = try std.fmt.bufPrint(&target_path, "/proc/{d}/ns/{s}", .{pid, ns});
+
+    const self_len = std.Io.Dir.readLinkAbsolute(io, sp, &self_link) catch |err| {
+        log.E("Failed to read symlink {s}: {}", .{sp, err});
+        return err;
+    };
+    const target_len = std.Io.Dir.readLinkAbsolute(io, tp, &target_link) catch |err| {
+        log.E("Failed to read symlink {s}: {}", .{tp, err});
+        return err;
+    };
+
+    const self_ns = self_link[0..self_len];
+    const target_ns = target_link[0..target_len];
+
+    log.D1("ns {s}: self {s} vs target {s}", .{ns, self_ns, target_ns});
+
+    return std.mem.eql(u8, self_ns, target_ns);
+}
+
 pub fn readMaps(gpa: std.mem.Allocator, io: std.Io, pid: i32) !Maps {
     var content: []const u8 = undefined;
     content = readProcFile(gpa, io, pid, "smaps") catch |err| blk: {
