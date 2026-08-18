@@ -282,22 +282,6 @@ fn extractStateStatus(gpa: std.mem.Allocator, thread_info: *process.ThreadInfo, 
     return .{ main_state.?, main_status.?, maps };
 }
 
-fn isSameNamespace(io: Io, pid: i32) !bool {
-    var buffer: [64]u8 = undefined;
-    var ns_pid: [100]u8 = undefined;
-    var ns_self: [100]u8 = undefined;
-    const path = try std.fmt.bufPrint(&buffer, "/proc/{d}/ns/pid", .{pid});
-    const pid_len = std.Io.Dir.readLinkAbsolute(io, path, &ns_pid) catch |err| {
-        log.E("Failed to read symlink {s}: {}", .{path, err});
-        return error.ReadLinkFailed;
-    };
-    const self_len = std.Io.Dir.readLinkAbsolute(io, "/proc/self/ns/pid", &ns_self) catch |err| {
-        log.E("Failed to read symlink /proc/self/ns/pid: {}", .{err});
-        return error.ReadLinkFailed;
-    };
-    return std.mem.eql(u8, ns_pid[0..pid_len], ns_self[0..self_len]);
-}
-
 fn signalHandler(_: std.posix.SIG) callconv(.c) void {
     globals.interrupted.store(true, .seq_cst);
 }
@@ -450,8 +434,7 @@ pub fn main(init: std.process.Init) !void {
     //
     // are we in the same namespace as the target?
     //
-    const same_ns = try isSameNamespace(io, pid);
-    log.D1("Target is in same namespace: {}", .{same_ns});
+    const same_ns = try proc.isSameNamespace(io, pid, "pid");
 
     //
     // fetch kernel stack information pre-fork
