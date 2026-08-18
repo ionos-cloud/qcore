@@ -89,6 +89,7 @@ const JobArgs = struct {
     info_mutex: *std.Io.Mutex,
     ignore_errors: bool,
     errors: usize,
+    netns_warned: bool = false,
 };
 
 // Phase 2 collect
@@ -289,7 +290,16 @@ fn jobWorker(args: *JobArgs, job: Job) void {
     defer args.info_mutex.unlock(io);
 
     const file = ret catch |err| {
-        if (args.ignore_errors) {
+        // a missing privilege to enter the target netns is not fatal; the
+        // network state is simply omitted. Every socket-family job hits this
+        // for the same reason, so warn only once (serialized via info_mutex).
+        if (err == error.SetNsPermission) {
+            if (!args.netns_warned) {
+                args.netns_warned = true;
+                log.W("Cannot enter target netns (need CAP_SYS_ADMIN), " ++
+                    "omitting network state", .{});
+            }
+        } else if (args.ignore_errors) {
             log.D2("Got error {} (ignored): {s}", .{err, job.path});
         } else {
             log.E("Error collecting {s}: {}", .{job.path, err});
@@ -359,7 +369,14 @@ fn collectNetlink(gpa: std.mem.Allocator, io: std.Io, pid: i32, af: u8, proto: u
         return err;
     };
     defer self_ns.close(io);
-    defer _ = std.os.linux.setns(self_ns.handle, std.os.linux.CLONE.NEWNET);
+
+    // restore qcore's own network namespace on the way out, but only if we
+    // actually switched into the target's below
+    var entered = false;
+    defer {
+        if (entered)
+            _ = std.os.linux.setns(self_ns.handle, std.os.linux.CLONE.NEWNET);
+    }
 
     const ns_path = try std.fmt.allocPrint(gpa, "/proc/{d}/ns/net", .{ pid });
     const target_ns = std.Io.Dir.openFileAbsolute(io, ns_path, .{}) catch |err| {
@@ -367,12 +384,32 @@ fn collectNetlink(gpa: std.mem.Allocator, io: std.Io, pid: i32, af: u8, proto: u
         return err;
     };
     defer target_ns.close(io);
-    // setns is a raw syscall wrapper returning a usize, so a failure is encoded
-    // as -errno in the return value rather than in C errno.
-    const ret: isize = @bitCast(std.os.linux.setns(target_ns.handle, std.os.linux.CLONE.NEWNET));
-    if (ret < 0) {
-        log.E("Failed to setns to target netns: errno {d}", .{-ret});
-        return error.SetNsFailedErro;
+
+    // Entering the target's network namespace needs CAP_SYS_ADMIN over it. When
+    // qcore already shares that netns - the common case for an unprivileged
+    // same-host dump - the setns would be a no-op that still requires the
+    // capability, so skip it and dump the sockets directly.
+    if (!try proc.isSameNamespace(io, pid, "net")) {
+        // setns is a raw syscall wrapper returning a usize, so a failure is
+        // encoded as -errno in the return value rather than in C errno.
+        const ret: isize = @bitCast(std.os.linux.setns(target_ns.handle,
+            std.os.linux.CLONE.NEWNET));
+
+        if (ret < 0) {
+            const err_no = -ret;
+
+            // Without privilege we cannot enter a foreign netns. Report this as
+            // a recoverable error so the caller omits the network state instead
+            // of failing the whole dump.
+            if (err_no == @intFromEnum(std.os.linux.E.PERM) or
+                err_no == @intFromEnum(std.os.linux.E.ACCES)) {
+                log.D1("setns to target netns denied (errno {d}) for {s}", .{err_no, path});
+                return error.SetNsPermission;
+            }
+            log.E("Failed to setns to target netns: errno {d}", .{err_no});
+            return error.SetNsFailedErro;
+        }
+        entered = true;
     }
 
     const fd = std.c.socket(diag.AF_NETLINK, diag.SOCK_RAW | diag.SOCK_CLOEXEC,
