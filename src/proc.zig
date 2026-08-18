@@ -200,10 +200,7 @@ pub fn slurp(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
 
     while (true) {
-        const nread = file.readPositionalAll(io, &buffer, out.items.len) catch |err| {
-            log.E("Failed to read auxv file: {}", .{err});
-            return err;
-        };
+        const nread = try file.readPositionalAll(io, &buffer, out.items.len);
         if (nread == 0)
             break;
 
