@@ -281,8 +281,10 @@ pub fn cloneChild(io: std.Io, pid: i32, syscall_addr: usize, rlim: usize,
         log.E("Failed to run mmap syscall for injection: {}", .{err});
         return err;
     };
-    if (mmap_addr == usize_neg_1) {
-        log.E("mmap syscall failed: {}", .{std.c._errno()});
+    // the injected syscall reports a failure as -errno in rax
+    const mmap_ret: i64 = @bitCast(mmap_addr);
+    if (mmap_ret < 0) {
+        log.E("Injected mmap on PID {d} failed with errno {d}", .{pid, -mmap_ret});
         return error.InvalidMmapAddress;
     }
 
