@@ -408,7 +408,7 @@ fn collectNetlink(gpa: std.mem.Allocator, io: std.Io, pid: i32, self_netns: ?std
                 return error.SetNsPermission;
             }
             log.E("Failed to setns to target netns: errno {d}", .{err_no});
-            return error.SetNsFailedErro;
+            return error.SetNsFailed;
         }
     }
     // switch back to qcore's own network namespace when collectNetlink returns
