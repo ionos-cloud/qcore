@@ -140,6 +140,34 @@ pub fn getNSPidFromStatus(status: *const Status, field: []const u8) !i32 {
     };
 }
 
+// returns the soft limit of RLIMIT_NOFILE
+pub fn getFdLimit(gpa: std.mem.Allocator, io: std.Io, pid: i32) !usize {
+    const raw = readProcFile(gpa, io, pid, "limits") catch |err| {
+        log.E("Failed to read limits file for pid {d}: {}", .{pid, err});
+        return err;
+    };
+    defer gpa.free(raw);
+
+    const key = "Max open files";
+
+    var lines = std.mem.tokenizeScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, key))
+            continue;
+
+        // columns after the name: soft limit, hard limit, units
+        var fields = std.mem.tokenizeScalar(u8, line[key.len..], ' ');
+        const soft = fields.next() orelse break;
+        return std.fmt.parseInt(usize, soft, 10) catch |err| {
+            log.E("Failed to parse fd limit: {s}", .{line});
+            return err;
+        };
+    }
+
+    log.E("No fd limit found in limits file", .{});
+    return error.ParsingError;
+}
+
 pub fn getState(gpa: std.mem.Allocator, io: std.Io, pid: i32) !State {
     const raw = readProcFile(gpa, io, pid, "stat") catch |err| {
         log.E("Failed to read state file for pid {d}: {}", .{pid, err});

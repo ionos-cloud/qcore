@@ -17,10 +17,6 @@ const readme = @embedFile("embedded-README");
 const ptrace = std.posix.ptrace;
 const PTRACE = std.os.linux.PTRACE;
 
-// std.c.prlimit doesn't allow us to specify the old_limit argument as null, so we have
-// to use it directly.
-pub extern "c" fn prlimit(pid: usize, resource: usize, new_limit: usize, old_limit: usize) c_int;
-
 fn usage(program_name: []const u8) void {
     std.debug.print(
         \\Usage: {s} [options] <pid>
@@ -129,21 +125,17 @@ fn forkTarget(gpa: std.mem.Allocator, io: Io, pid: i32, syscall_addr: usize, npr
     //
     // get fd limit of target
     //
-    var rlim: std.c.rlimit = undefined;
-    // const ret = std.c.prlimit(pid, std.c.rlimit_resource.NOFILE, null, &rlim);
-    const ret = prlimit(@intCast(pid), @intFromEnum(std.c.rlimit_resource.NOFILE),
-        0, @intFromPtr(&rlim));
-    if (ret == -1) {
-        log.E("Failed to get fd limit of target: {}", .{std.c._errno()});
-        return error.GetFdLimitFailed;
-    }
-    log.D1("Target fd limit is {}", .{rlim.cur});
+    // Use /proc/<pid>/limits, which is world readable. prlimit() would need
+    // matching credentials or CAP_SYS_RESOURCE even for reading.
+    //
+    const fd_limit = try proc.getFdLimit(gpa, io, pid);
+    log.D1("Target fd limit is {}", .{fd_limit});
 
     //
     // inject fork into child
     //
     const inject_start = std.Io.Clock.boot.now(io).toNanoseconds();
-    const child_nspid = try process.cloneChild(io, i_pid, syscall_addr, rlim.cur,
+    const child_nspid = try process.cloneChild(io, i_pid, syscall_addr, fd_limit,
         child_hostpid_out);
     const inject_end = std.Io.Clock.boot.now(io).toNanoseconds();
     log.V("Fork took {d}ms", .{@divTrunc(inject_end - inject_start, 1000000)});
