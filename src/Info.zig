@@ -420,7 +420,7 @@ fn collectNetlink(gpa: std.mem.Allocator, io: std.Io, pid: i32, self_netns: ?std
     const fd = std.c.socket(diag.AF_NETLINK, diag.SOCK_RAW | diag.SOCK_CLOEXEC,
         diag.NETLINK_SOCK_DIAG);
     if (fd < 0) {
-        log.E("Failed to create netlink socket: {}", .{std.c._errno()});
+        log.E("Failed to create netlink socket: errno {d}", .{std.c._errno().*});
         return error.NetlinkSocketFailed;
     }
     defer _ = std.c.close(fd);
@@ -484,7 +484,7 @@ fn collectNetlink(gpa: std.mem.Allocator, io: std.Io, pid: i32, self_netns: ?std
     };
     const s_ret = std.c.sendmsg(fd, &m, 0);
     if (s_ret < 0) {
-        log.E("Failed to send netlink request: {}", .{std.c._errno()});
+        log.E("Failed to send netlink request: errno {d}", .{std.c._errno().*});
         return error.NetlinkRequestFailed;
     }
 
@@ -500,7 +500,7 @@ fn collectNetlink(gpa: std.mem.Allocator, io: std.Io, pid: i32, self_netns: ?std
     recv: while (true) {
         const i_len = std.c.recv(fd, buffer.ptr, buffer.len, 0);
         if (i_len < 0) {
-            log.E("Failed to receive netlink response: {}", .{std.c._errno()});
+            log.E("Failed to receive netlink response: errno {d}", .{std.c._errno().*});
             return error.NetlinkReceiveFailed;
         }
         if (i_len == 0)

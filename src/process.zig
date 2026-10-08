@@ -165,7 +165,8 @@ fn waitpid(pid: i32, comptime format: []const u8, args: anytype) !c_int {
     if (ret == -1) {
         var buf = [_]u8 {0} ** 1000;
         const reason = try std.fmt.bufPrint(&buf, format, args);
-        log.E("Failed to wait for PID {d} for {s}: {}", .{pid, reason, std.c._errno()});
+        log.E("Failed to wait for PID {d} for {s}: errno {d}",
+            .{pid, reason, std.c._errno().*});
 
         // waitpid is interrupted by alarm. We have to force a stop to the child and
         // collect the stop
@@ -177,8 +178,8 @@ fn waitpid(pid: i32, comptime format: []const u8, args: anytype) !c_int {
         _ = std.c.alarm(5);
         ret = std.c.waitpid(pid, &status, __WALL);
         if (ret == -1) {
-            log.E("Failed to wait for PID {d} for {s} after forcing a stop: {}",
-                .{pid, reason, std.c._errno()});
+            log.E("Failed to wait for PID {d} for {s} after forcing a stop: errno {d}",
+                .{pid, reason, std.c._errno().*});
             return error.WaitFailed;
         }
     }
