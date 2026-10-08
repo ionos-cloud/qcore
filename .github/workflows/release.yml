@@ -38,11 +38,23 @@ jobs:
           sha256sum "$asset" > "$asset.sha256"
           echo "asset=$asset" >> "$GITHUB_ENV"
 
+      - name: Build release notes from CHANGELOG
+        run: |
+          notes="$(.github/scripts/extract-changelog.sh "$GITHUB_REF_NAME" || true)"
+          if [ -n "$notes" ]; then
+            printf '%s\n' "$notes" > release-notes.md
+            echo "notes_flag=--notes-file release-notes.md" >> "$GITHUB_ENV"
+            echo "Using CHANGELOG.md section for $GITHUB_REF_NAME"
+          else
+            echo "notes_flag=--generate-notes" >> "$GITHUB_ENV"
+            echo "::warning::No CHANGELOG.md section for $GITHUB_REF_NAME; falling back to auto-generated notes"
+          fi
+
       - name: Create release and upload assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes \
+            $notes_flag \
             "$asset" "$asset.sha256"
