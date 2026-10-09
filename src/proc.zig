@@ -140,6 +140,34 @@ pub fn getNSPidFromStatus(status: *const Status, field: []const u8) !i32 {
     };
 }
 
+// returns the soft limit of RLIMIT_NOFILE
+pub fn getFdLimit(gpa: std.mem.Allocator, io: std.Io, pid: i32) !usize {
+    const raw = readProcFile(gpa, io, pid, "limits") catch |err| {
+        log.E("Failed to read limits file for pid {d}: {}", .{pid, err});
+        return err;
+    };
+    defer gpa.free(raw);
+
+    const key = "Max open files";
+
+    var lines = std.mem.tokenizeScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, key))
+            continue;
+
+        // columns after the name: soft limit, hard limit, units
+        var fields = std.mem.tokenizeScalar(u8, line[key.len..], ' ');
+        const soft = fields.next() orelse break;
+        return std.fmt.parseInt(usize, soft, 10) catch |err| {
+            log.E("Failed to parse fd limit: {s}", .{line});
+            return err;
+        };
+    }
+
+    log.E("No fd limit found in limits file", .{});
+    return error.ParsingError;
+}
+
 pub fn getState(gpa: std.mem.Allocator, io: std.Io, pid: i32) !State {
     const raw = readProcFile(gpa, io, pid, "stat") catch |err| {
         log.E("Failed to read state file for pid {d}: {}", .{pid, err});
@@ -200,10 +228,7 @@ pub fn slurp(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
 
     while (true) {
-        const nread = file.readPositionalAll(io, &buffer, out.items.len) catch |err| {
-            log.E("Failed to read auxv file: {}", .{err});
-            return err;
-        };
+        const nread = try file.readPositionalAll(io, &buffer, out.items.len);
         if (nread == 0)
             break;
 
@@ -218,6 +243,35 @@ pub fn readProcFile(gpa: std.mem.Allocator, io: std.Io, pid: i32, name: []const 
     defer gpa.free(path);
 
     return slurp(gpa, io, path);
+}
+
+// compare qcore's namespace of the given type ("net", "pid", ...) with the
+// target's via the /proc/<pid>/ns/<type> symlinks; returns true when both
+// resolve to the same namespace
+pub fn isSameNamespace(io: std.Io, pid: i32, ns: []const u8) !bool {
+    var self_path: [64]u8 = undefined;
+    var target_path: [64]u8 = undefined;
+    var self_link: [64]u8 = undefined;
+    var target_link: [64]u8 = undefined;
+
+    const sp = try std.fmt.bufPrint(&self_path, "/proc/self/ns/{s}", .{ns});
+    const tp = try std.fmt.bufPrint(&target_path, "/proc/{d}/ns/{s}", .{pid, ns});
+
+    const self_len = std.Io.Dir.readLinkAbsolute(io, sp, &self_link) catch |err| {
+        log.E("Failed to read symlink {s}: {}", .{sp, err});
+        return err;
+    };
+    const target_len = std.Io.Dir.readLinkAbsolute(io, tp, &target_link) catch |err| {
+        log.E("Failed to read symlink {s}: {}", .{tp, err});
+        return err;
+    };
+
+    const self_ns = self_link[0..self_len];
+    const target_ns = target_link[0..target_len];
+
+    log.D1("ns {s}: self {s} vs target {s}", .{ns, self_ns, target_ns});
+
+    return std.mem.eql(u8, self_ns, target_ns);
 }
 
 pub fn readMaps(gpa: std.mem.Allocator, io: std.Io, pid: i32) !Maps {

@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section from `CHANGELOG.md` and uses it as the release body, falling back to
   auto-generated notes when no matching section exists.
 
+### Fixed
+
+- Fix unprivileged dumps, which failed since 0.9.1 when entering the target
+  netns: skip `setns` when qcore shares the target's netns, and omit the
+  network state when it cannot be entered.
+- Read the target's fd limit from `/proc/<pid>/limits`, so root no longer
+  needs `CAP_SYS_RESOURCE` to dump another user's process.
+- Detect all errors of the injected `mmap`.
+- Print errno values instead of the errno address.
+- Stop logging a mislabeled auxv error for failed reads of `/proc` files.
+
 ## [0.9.1] - 2026-07-24
 
 ### Added
